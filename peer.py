@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 import requests
 import os
 import hashlib
@@ -216,48 +216,69 @@ def download_file(file_id, output_path):
     logger.debug(f"File download complete: {output_path}")
     return True
 
+@app.route('/')
+def index():
+    """Serve the main UI page."""
+    return render_template('index.html')
+
+@app.route('/api/share', methods=['POST'])
+def api_share():
+    """API endpoint for sharing a file."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    # Save the file temporarily
+    temp_path = os.path.join('temp', file.filename)
+    os.makedirs('temp', exist_ok=True)
+    file.save(temp_path)
+    
+    try:
+        file_id = share_file(temp_path)
+        return jsonify({
+            'success': True,
+            'file_id': file_id,
+            'filename': file.filename
+        })
+    except Exception as e:
+        logger.error(f"Error sharing file: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        # Clean up temporary file
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+@app.route('/api/download', methods=['POST'])
+def api_download():
+    """API endpoint for downloading a file."""
+    data = request.json
+    if not data or 'file_id' not in data or 'output_path' not in data:
+        return jsonify({'error': 'Missing required parameters'}), 400
+    
+    try:
+        file_id = int(data['file_id'])
+        output_path =   data['output_path']
+        
+        # Start download in a separate thread
+        thread = Thread(target=download_file, args=(file_id, output_path))
+        thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Download started'
+        })
+    except Exception as e:
+        logger.error(f"Error starting download: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
-    if len(sys.argv) < 3:
-        print("Usage: python peer.py <port> <share|download> [filepath] [file_id]")
+    if len(sys.argv) < 2:
+        print("Usage: python peer.py <port>")
         sys.exit(1)
     
     port = int(sys.argv[1])
-    action = sys.argv[2]
-    
     app.config['PORT'] = port
-    server = Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': port})
-    server.daemon = True
-    server.start()
-    
-    try:
-        if action == 'share':
-            if len(sys.argv) != 4:
-                print("Usage: python peer.py <port> share <filepath>")
-                sys.exit(1)
-            filepath = sys.argv[3]
-            if not os.path.exists(filepath):
-                print(f"Error: File {filepath} does not exist")
-                sys.exit(1)
-            file_id = share_file(filepath)
-            print(f"File shared with ID: {file_id}")
-        
-        elif action == 'download':
-            if len(sys.argv) != 5:
-                print("Usage: python peer.py <port> download <file_id> <output_path>")
-                sys.exit(1)
-            file_id = int(sys.argv[3])
-            output_path = sys.argv[4]
-            if os.path.exists(output_path):
-                print(f"Warning: File {output_path} already exists and will be overwritten")
-            download_file(file_id, output_path)
-            print(f"File downloaded to: {output_path}")
-        
-        # Keep the main thread running
-        while True:
-            pass
-    except KeyboardInterrupt:
-        print("\nShutting down peer...")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        sys.exit(1)
+    app.run(host='0.0.0.0', port=port, debug=True)
